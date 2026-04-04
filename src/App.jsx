@@ -808,18 +808,19 @@ export default function App() {
           </div>
         )}
 
+        {/* Override Modal */}
+        {overrideModal && (
+          <OverrideModal
+            modal={overrideModal}
+            onSave={saveOverride}
+            onDelete={deleteOverride}
+            onClose={() => setOverrideModal(null)}
+            T={T}
+          />
+        )}
+
         {activeTab === "transactions" && (
           <div>
-            {/* Override Modal */}
-            {overrideModal && (
-              <OverrideModal
-                modal={overrideModal}
-                onSave={saveOverride}
-                onDelete={deleteOverride}
-                onClose={() => setOverrideModal(null)}
-                T={T}
-              />
-            )}
 
             {/* CSV bar */}
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
