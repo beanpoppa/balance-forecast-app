@@ -1,0 +1,19 @@
+services:
+  backend:
+    image: beanpoppa/balance-forecast-backend:latest
+    container_name: balance-forecast-backend
+    environment:
+      - JWT_SECRET=IwastoldToEnterav3ryL0ngstr1ngS0thisisWhatI;mTyp1ng
+      - DB_PATH=/data/forecast.db
+    volumes:
+      - /mnt/pool1/Containers/balance-forecast/data:/data   # data persists on TrueNAS
+    restart: unless-stopped
+
+  frontend:
+    image: beanpoppa/balance-forecast-frontend:latest
+    container_name: balance-forecast-frontend
+    ports:
+      - "3050:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
