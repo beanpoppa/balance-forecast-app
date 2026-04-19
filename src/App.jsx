@@ -322,7 +322,7 @@ function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggl
           const isToday = dateStr === todayDateStr;
           const dayEvents = eventsByDay[day] || [];
           return (
-            <div key={day} style={{ background: T.calDay, border: `1px solid ${isToday ? T.accent : T.calDayBorder}`, borderRadius: 10, padding: "6px 8px", minHeight: 80 }}>
+            <div key={day} style={{ background: T.calDay, border: `1px solid ${isToday ? T.accent : T.calDayBorder}`, borderRadius: 10, padding: "6px 8px", minHeight: 80, overflow: "hidden" }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: isToday ? 700 : 400, color: isToday ? T.accent : T.textMuted, marginBottom: 4 }}>{day}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                 {dayEvents.map(({ item, key, isReconciled, isCancelled }) => {
@@ -331,7 +331,7 @@ function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggl
                   const border = isCancelled ? T.border : isReconciled ? T.border : (item.type === "income" ? T.income + "55" : T.expense + "55");
                   return (
                     <div key={key} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 4, padding: "2px 4px", fontSize: 10, fontFamily: "'DM Sans', sans-serif", fontWeight: 600, color, overflow: "hidden" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
                         <span style={{ flex: 1, textDecoration: isCancelled ? "line-through" : isReconciled ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", opacity: isCancelled ? 0.5 : 1 }}>
                           {item.name} <span style={{ opacity: 0.8 }}>{item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}</span>
                         </span>
@@ -445,7 +445,10 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("chart");
   const [importError, setImportError] = useState("");
   const [importSuccess, setImportSuccess] = useState("");
+  const [editingItemId, setEditingItemId] = useState(null);
+  const [editForm, setEditForm] = useState({});
   const settingsTimerRef = useRef(null);
+  const skipNextSettingsSave = useRef(false);
 
   const T = darkMode ? darkTheme : lightTheme;
 
@@ -465,6 +468,7 @@ export default function App() {
         apiFetch("/cancelled", {}, auth.token),
         apiFetch("/overrides", {}, auth.token),
       ]);
+      skipNextSettingsSave.current = true; // B008: skip the spurious save triggered by these state updates
       setStartingBalance(settings.starting_balance);
       setLowBalanceThreshold(settings.low_balance_threshold);
       setForecastDays(settings.forecast_days);
@@ -482,6 +486,7 @@ export default function App() {
 
   useEffect(() => {
     if (!auth || loading) return;
+    if (skipNextSettingsSave.current) { skipNextSettingsSave.current = false; return; } // B008
     if (settingsTimerRef.current) clearTimeout(settingsTimerRef.current);
     const t = setTimeout(() => {
       apiFetch("/settings", { method: "PUT", body: JSON.stringify({ starting_balance: startingBalance, low_balance_threshold: lowBalanceThreshold, forecast_days: forecastDays, dark_mode: darkMode }) }, auth.token);
@@ -544,9 +549,19 @@ export default function App() {
     setReconciled(prev => { const next = { ...prev }; Object.keys(next).forEach(k => { if (k.startsWith(`${id}_`)) delete next[k]; }); return next; });
   }
 
+  async function saveItemEdit(id) {
+    if (!editForm.name || !editForm.amount) return;
+    await apiFetch(`/items/${id}`, { method: "PUT", body: JSON.stringify({ ...editForm, amount: parseFloat(editForm.amount) }) }, auth.token);
+    const endDate = editForm.endDate && editForm.endDate.includes("-") ? editForm.endDate : "";
+    setItems(prev => prev.map(i => i.id === id ? { ...i, ...editForm, amount: parseFloat(editForm.amount), endDate } : i));
+    setEditingItemId(null);
+  }
+
+  function csvQuote(val) { const s = String(val); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; }
+
   function exportCSV() {
     const header = "name,amount,type,frequency,startDate,endDate";
-    const rows = items.map(i => `${i.name},${i.amount},${i.type},${i.frequency},${i.startDate},${i.endDate || ""}`);
+    const rows = items.map(i => [i.name, i.amount, i.type, i.frequency, i.startDate, i.endDate || ""].map(csvQuote).join(","));
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "balance-forecast-items.csv"; a.click();
@@ -562,8 +577,9 @@ export default function App() {
         const lines = evt.target.result.trim().split("\n").filter(Boolean);
         const dataLines = lines[0].toLowerCase().includes("name") ? lines.slice(1) : lines;
         let imported = [], errors = [];
+        function parseCSVRow(line) { const fields = []; let cur = "", inQ = false; for (let i = 0; i < line.length; i++) { const c = line[i]; if (c === '"') { if (inQ && line[i+1] === '"') { cur += '"'; i++; } else { inQ = !inQ; } } else if (c === "," && !inQ) { fields.push(cur); cur = ""; } else { cur += c; } } fields.push(cur); return fields.map(s => s.trim()); }
         for (const [idx, line] of dataLines.entries()) {
-          const [name, amount, type, frequency, startDate, endDate] = line.split(",").map(s => s.trim());
+          const [name, amount, type, frequency, startDate, endDate] = parseCSVRow(line);
           const rowNum = idx + 2;
           if (!name) { errors.push(`Row ${rowNum}: missing name`); continue; }
           if (isNaN(parseFloat(amount))) { errors.push(`Row ${rowNum}: invalid amount`); continue; }
@@ -593,10 +609,11 @@ export default function App() {
       const [idStr] = key.split("_");
       const item = items.find(i => i.id === parseInt(idStr));
       if (!item) return;
-      adj += item.type === "income" ? item.amount : -item.amount;
+      const amount = overrides[key] !== undefined ? overrides[key] : item.amount; // B006
+      adj += item.type === "income" ? amount : -amount;
     });
     return adj;
-  }, [reconciled, items]);
+  }, [reconciled, items, overrides]);
 
   const effectiveBalance = startingBalance + reconciledAdjustment;
 
@@ -749,7 +766,7 @@ export default function App() {
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                 <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 18, fontWeight: 700, color: T.accent }}>{formatCurrency(effectiveBalance)}</span>
-                <button onClick={() => { setBalanceInput(String(startingBalance)); setEditingBalance(true); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 7, padding: "5px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>✏️ Edit</button>
+                <button onClick={() => { setBalanceInput(String(effectiveBalance)); setEditingBalance(true); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 7, padding: "5px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }}>✏️ Edit</button>
               </div>
             )}
           </div>
@@ -838,41 +855,59 @@ export default function App() {
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {recurringItems.map(item => {
                   const nextDate = getNextDate(item);
-                  // Find upcoming overrides for this item
                   const itemOverrides = Object.keys(overrides).filter(k => k.startsWith(`${item.id}_`));
+                  const isEditing = editingItemId === item.id;
                   return (
                     <div key={item.id} style={{ ...cardStyle, padding: "12px 20px" }}>
-                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
-                          <div>
-                            <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
-                            <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>
-                              {item.frequency} · next: {nextDate}{item.endDate ? ` · ends ${item.endDate}` : ""}
-                            </div>
+                      {isEditing ? (
+                        <div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
+                            <div><label style={labelStyle}>Name</label><input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} style={inputStyle} /></div>
+                            <div><label style={labelStyle}>Amount ($)</label><input type="number" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: e.target.value})} style={inputStyle} /></div>
+                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Frequency</label><select value={editForm.frequency} onChange={e => setEditForm({...editForm, frequency: e.target.value})} style={inputStyle}>{FREQUENCIES.filter(f => f !== "One-time").map(f => <option key={f}>{f}</option>)}</select></div>
+                            <div><label style={labelStyle}>Start Date</label><input type="date" value={editForm.startDate} onChange={e => setEditForm({...editForm, startDate: e.target.value})} style={inputStyle} /></div>
+                            <div><label style={labelStyle}>End Date (optional)</label><input type="date" value={editForm.endDate || ""} onChange={e => setEditForm({...editForm, endDate: e.target.value})} style={inputStyle} /></div>
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => saveItemEdit(item.id)} style={btnPrimary}>Save</button>
+                            <button onClick={() => setEditingItemId(null)} style={btnSecondary}>Cancel</button>
                           </div>
                         </div>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                          {itemOverrides.length > 0 && (
-                            <span style={{ fontSize: 11, color: T.accent, fontFamily: "'DM Mono', monospace", background: T.accent + "18", borderRadius: 4, padding: "2px 6px" }}>
-                              {itemOverrides.length} override{itemOverrides.length > 1 ? "s" : ""}
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
+                              <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>
+                                {item.frequency} · next: {nextDate}{item.endDate ? ` · ends ${item.endDate}` : ""}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            {itemOverrides.length > 0 && (
+                              <span style={{ fontSize: 11, color: T.accent, fontFamily: "'DM Mono', monospace", background: T.accent + "18", borderRadius: 4, padding: "2px 6px" }}>
+                                {itemOverrides.length} override{itemOverrides.length > 1 ? "s" : ""}
+                              </span>
+                            )}
+                            <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
+                              {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
                             </span>
-                          )}
-                          <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
-                            {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
-                          </span>
-                          <button
-                            onClick={() => {
-                              const recKey = `${item.id}_${nextDate}`;
-                              setOverrideModal({ key: recKey, itemName: item.name, currentAmount: overrides[recKey] !== undefined ? overrides[recKey] : item.amount, defaultAmount: item.amount, date: nextDate, itemId: item.id });
-                            }}
-                            title="Override next occurrence amount"
-                            style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.accent, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}>
-                            ✏️ Next
-                          </button>
-                          <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
+                            <button
+                              onClick={() => {
+                                const recKey = `${item.id}_${nextDate}`;
+                                setOverrideModal({ key: recKey, itemName: item.name, currentAmount: overrides[recKey] !== undefined ? overrides[recKey] : item.amount, defaultAmount: item.amount, date: nextDate, itemId: item.id });
+                              }}
+                              title="Override next occurrence amount"
+                              style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.accent, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}>
+                              ✏️ Next
+                            </button>
+                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
+                            <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
+                          </div>
                         </div>
-                      </div>
+                      )}
                     </div>
                   );
                 })}
@@ -883,23 +918,44 @@ export default function App() {
             <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: T.textMuted, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>📌 One-time ({oneTimeItems.length})</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {oneTimeItems.map(item => (
-                  <div key={item.id} style={{ ...cardStyle, padding: "12px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                      <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
-                        <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>{item.startDate}</div>
-                      </div>
+                {oneTimeItems.map(item => {
+                  const isEditing = editingItemId === item.id;
+                  return (
+                    <div key={item.id} style={{ ...cardStyle, padding: "12px 20px" }}>
+                      {isEditing ? (
+                        <div>
+                          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
+                            <div><label style={labelStyle}>Name</label><input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} style={inputStyle} /></div>
+                            <div><label style={labelStyle}>Amount ($)</label><input type="number" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: e.target.value})} style={inputStyle} /></div>
+                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Date</label><input type="date" value={editForm.startDate} onChange={e => setEditForm({...editForm, startDate: e.target.value})} style={inputStyle} /></div>
+                          </div>
+                          <div style={{ display: "flex", gap: 8 }}>
+                            <button onClick={() => saveItemEdit(item.id)} style={btnPrimary}>Save</button>
+                            <button onClick={() => setEditingItemId(null)} style={btnSecondary}>Cancel</button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                            <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
+                              <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>{item.startDate}</div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                            <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
+                              {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
+                            </span>
+                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: "One-time", startDate: item.startDate, endDate: "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
+                            <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                      <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
-                        {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
-                      </span>
-                      <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
                 {oneTimeItems.length === 0 && (
                   <div style={{ color: T.textMuted, fontSize: 13, fontFamily: "'DM Mono', monospace", padding: "10px 0" }}>No upcoming one-time items.</div>
                 )}
