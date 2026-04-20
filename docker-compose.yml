@@ -3,7 +3,7 @@ services:
     image: beanpoppa/balance-forecast-backend:latest
     container_name: balance-forecast-backend
     environment:
-      - JWT_SECRET=IwastoldToEnterav3ryL0ngstr1ngS0thisisWhatI;mTyp1ng
+      - JWT_SECRET=<enter a long string here>
       - DB_PATH=/data/forecast.db
     volumes:
       - /mnt/pool1/Containers/balance-forecast/data:/data   # data persists on TrueNAS
