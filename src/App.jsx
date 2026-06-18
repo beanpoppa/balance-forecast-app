@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer, Area, AreaChart } from "recharts";
+import { XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ResponsiveContainer, Area, AreaChart, PieChart, Pie, Cell, Legend } from "recharts";
 
 const FREQUENCIES = ["One-time", "Weekly", "Bi-weekly", "Monthly", "Quarterly", "Annual"];
 const FORECAST_OPTIONS = [
@@ -11,6 +11,8 @@ const FORECAST_OPTIONS = [
   { label: "5 years",  days: 1825 },
 ];
 const API = "/api";
+const CATEGORY_COLORS = ["#2dd4bf", "#0ea5e9", "#f97316", "#a855f7", "#facc15", "#ec4899", "#84cc16", "#6366f1", "#14b8a6", "#f43f5e"];
+function colorForCategory(index) { return CATEGORY_COLORS[index % CATEGORY_COLORS.length]; }
 
 function formatCurrency(val) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(val);
@@ -256,7 +258,7 @@ function AdminPanel({ token, currentUser, T, onClose, onFactoryReset }) {
         <div style={{ ...card, border: `1px solid ${T.danger}44`, marginBottom: 0 }}>
           <h3 style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, color: T.danger }}>Factory Reset</h3>
           <p style={{ margin: "0 0 14px", fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
-            Permanently deletes all your items, reconciled marks, and overrides, and resets settings to defaults. This cannot be undone.
+            Permanently deletes all your items, categories, reconciled marks, and overrides, and resets settings to defaults. This cannot be undone.
           </p>
           <label style={lbl}>Type RESET to confirm</label>
           <div style={{ display: "flex", gap: 10 }}>
@@ -264,6 +266,98 @@ function AdminPanel({ token, currentUser, T, onClose, onFactoryReset }) {
             <button onClick={factoryReset} disabled={resetConfirm !== "RESET"} style={{ background: resetConfirm === "RESET" ? T.danger : T.surface2, border: `1px solid ${T.danger}44`, color: resetConfirm === "RESET" ? "#fff" : T.textMuted, padding: "9px 18px", borderRadius: 8, cursor: resetConfirm === "RESET" ? "pointer" : "default", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", fontSize: 13, whiteSpace: "nowrap" }}>Factory Reset</button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Categories Panel ─────────────────────────────────────────────────────────
+function CategoriesPanel({ token, T, categories, onClose, onChange }) {
+  const [newName, setNewName] = useState({ income: "", expense: "" });
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [err, setErr] = useState("");
+
+  const incomeCats = categories.filter(c => c.type === "income");
+  const expenseCats = categories.filter(c => c.type === "expense");
+
+  async function addCategory(type) {
+    setErr("");
+    const name = newName[type].trim();
+    if (!name) return;
+    try {
+      const cat = await apiFetch("/categories", { method: "POST", body: JSON.stringify({ name, type }) }, token);
+      onChange(prev => [...prev, cat]);
+      setNewName(prev => ({ ...prev, [type]: "" }));
+    } catch (e) { setErr(e.message); }
+  }
+
+  async function renameCategory(id) {
+    setErr("");
+    const name = editName.trim();
+    if (!name) return;
+    try {
+      await apiFetch(`/categories/${id}`, { method: "PUT", body: JSON.stringify({ name }) }, token);
+      onChange(prev => prev.map(c => c.id === id ? { ...c, name } : c));
+      setEditingId(null);
+    } catch (e) { setErr(e.message); }
+  }
+
+  async function deleteCategory(id, name) {
+    if (!confirm(`Delete category "${name}"? Items using it will become Uncategorized.`)) return;
+    await apiFetch(`/categories/${id}`, { method: "DELETE" }, token);
+    onChange(prev => prev.filter(c => c.id !== id));
+  }
+
+  const inp = { background: T.inputBg, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, padding: "9px 12px", fontFamily: "'DM Mono', monospace", fontSize: 13, width: "100%", boxSizing: "border-box", outline: "none" };
+  const card = { background: T.surface, borderRadius: 14, padding: "20px 24px", border: `1px solid ${T.border}`, marginBottom: 20 };
+
+  function renderList(type, list) {
+    return (
+      <div style={card}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600, color: T.text, textTransform: "capitalize" }}>{type} Categories</h3>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+          {list.map(c => (
+            <div key={c.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: T.surface2, borderRadius: 8, padding: "10px 14px" }}>
+              {editingId === c.id ? (
+                <>
+                  <input value={editName} onChange={e => setEditName(e.target.value)} onKeyDown={e => e.key === "Enter" && renameCategory(c.id)} style={{ ...inp, marginRight: 8 }} autoFocus />
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => renameCategory(c.id)} style={{ background: "none", border: `1px solid ${T.accent}44`, color: T.accent, padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Save</button>
+                    <button onClick={() => setEditingId(null)} style={{ background: "none", border: `1px solid ${T.border}`, color: T.textMuted, padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Cancel</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <span style={{ fontWeight: 600, color: T.text, fontSize: 14 }}>{c.name}</span>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={() => { setEditingId(c.id); setEditName(c.name); }} style={{ background: "none", border: `1px solid ${T.border}`, color: T.textMuted, padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Rename</button>
+                    <button onClick={() => deleteCategory(c.id, c.name)} style={{ background: "none", border: `1px solid ${T.danger}44`, color: T.danger, padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12 }}>Delete</button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+          {list.length === 0 && <div style={{ color: T.textMuted, fontSize: 13 }}>No categories yet.</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input placeholder={`New ${type} category`} value={newName[type]} onChange={e => setNewName(prev => ({ ...prev, [type]: e.target.value }))} onKeyDown={e => e.key === "Enter" && addCategory(type)} style={inp} />
+          <button onClick={() => addCategory(type)} style={{ background: T.surface2, border: `1px solid ${T.accent}44`, color: T.accent, padding: "9px 18px", borderRadius: 8, cursor: "pointer", fontWeight: 600, fontFamily: "'DM Sans', sans-serif", fontSize: 13, whiteSpace: "nowrap" }}>Add</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
+      <div style={{ background: T.bg, borderRadius: 16, border: `1px solid ${T.border}`, padding: "28px 32px", width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+          <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: T.text }}>🏷️ Categories</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
+        </div>
+        {err && <div style={{ background: T.danger + "22", border: `1px solid ${T.danger}44`, borderRadius: 8, padding: "10px 14px", marginBottom: 16, color: T.danger, fontSize: 13 }}>{err}</div>}
+        {renderList("expense", expenseCats)}
+        {renderList("income", incomeCats)}
       </div>
     </div>
   );
@@ -435,13 +529,15 @@ export default function App() {
   const [cancelled, setCancelled] = useState({});
   const [overrides, setOverrides] = useState({});
   const [loading, setLoading] = useState(true);
+  const [categories, setCategories] = useState([]); // [{id, name, type}]
   const [showAdmin, setShowAdmin] = useState(false);
+  const [showCategories, setShowCategories] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [overrideModal, setOverrideModal] = useState(null); // { key, itemName, currentAmount, date }
   const [showArchived, setShowArchived] = useState(false);
   const [editingBalance, setEditingBalance] = useState(false);
   const [balanceInput, setBalanceInput] = useState("");
-  const [form, setForm] = useState({ name: "", amount: "", type: "expense", frequency: "Monthly", startDate: todayStr(), endDate: "" });
+  const [form, setForm] = useState({ name: "", amount: "", type: "expense", frequency: "Monthly", startDate: todayStr(), endDate: "", categoryId: "" });
   const [activeTab, setActiveTab] = useState("chart");
   const [importError, setImportError] = useState("");
   const [importSuccess, setImportSuccess] = useState("");
@@ -461,22 +557,24 @@ export default function App() {
     if (!auth) return;
     setLoading(true);
     try {
-      const [settings, itemsData, reconciledData, cancelledData, overridesData] = await Promise.all([
+      const [settings, itemsData, reconciledData, cancelledData, overridesData, categoriesData] = await Promise.all([
         apiFetch("/settings", {}, auth.token),
         apiFetch("/items", {}, auth.token),
         apiFetch("/reconciled", {}, auth.token),
         apiFetch("/cancelled", {}, auth.token),
         apiFetch("/overrides", {}, auth.token),
+        apiFetch("/categories", {}, auth.token),
       ]);
       skipNextSettingsSave.current = true; // B008: skip the spurious save triggered by these state updates
       setStartingBalance(settings.starting_balance);
       setLowBalanceThreshold(settings.low_balance_threshold);
       setForecastDays(settings.forecast_days);
       setDarkMode(!!settings.dark_mode);
-      setItems(itemsData.map(i => { const ed = i.end_date || i.endDate || ""; const endDate = ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; return { ...i, startDate: i.start_date || i.startDate, endDate }; }));
+      setItems(itemsData.map(i => { const ed = i.end_date || i.endDate || ""; const endDate = ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; return { ...i, startDate: i.start_date || i.startDate, endDate, categoryId: i.categoryId ?? null }; }));
       setReconciled(reconciledData);
       setCancelled(cancelledData);
       setOverrides(overridesData);
+      setCategories(categoriesData);
     } catch (e) { if (e.message?.includes("token")) handleLogout(); }
     setLoading(false);
   }, [auth]);
@@ -538,8 +636,8 @@ export default function App() {
   async function addItem() {
     if (!form.name || !form.amount) return;
     const item = await apiFetch("/items", { method: "POST", body: JSON.stringify({ ...form, amount: parseFloat(form.amount) }) }, auth.token);
-    setItems(prev => [...prev, { ...item, startDate: item.start_date || item.startDate, endDate: (() => { const ed = item.end_date || item.endDate || ""; return ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; })() }]);
-    setForm({ name: "", amount: "", type: "expense", frequency: "Monthly", startDate: todayStr(), endDate: "" });
+    setItems(prev => [...prev, { ...item, startDate: item.start_date || item.startDate, endDate: (() => { const ed = item.end_date || item.endDate || ""; return ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; })(), categoryId: item.categoryId ?? null }]);
+    setForm({ name: "", amount: "", type: "expense", frequency: "Monthly", startDate: todayStr(), endDate: "", categoryId: "" });
     setShowForm(false);
   }
 
@@ -553,15 +651,15 @@ export default function App() {
     if (!editForm.name || !editForm.amount) return;
     await apiFetch(`/items/${id}`, { method: "PUT", body: JSON.stringify({ ...editForm, amount: parseFloat(editForm.amount) }) }, auth.token);
     const endDate = editForm.endDate && editForm.endDate.includes("-") ? editForm.endDate : "";
-    setItems(prev => prev.map(i => i.id === id ? { ...i, ...editForm, amount: parseFloat(editForm.amount), endDate } : i));
+    setItems(prev => prev.map(i => i.id === id ? { ...i, ...editForm, amount: parseFloat(editForm.amount), endDate, categoryId: editForm.categoryId || null } : i));
     setEditingItemId(null);
   }
 
   function csvQuote(val) { const s = String(val); return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s; }
 
   function exportCSV() {
-    const header = "name,amount,type,frequency,startDate,endDate";
-    const rows = items.map(i => [i.name, i.amount, i.type, i.frequency, i.startDate, i.endDate || ""].map(csvQuote).join(","));
+    const header = "name,amount,type,frequency,startDate,endDate,category";
+    const rows = items.map(i => [i.name, i.amount, i.type, i.frequency, i.startDate, i.endDate || "", categoryName(i.categoryId)].map(csvQuote).join(","));
     const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "balance-forecast-items.csv"; a.click();
@@ -579,16 +677,20 @@ export default function App() {
         let imported = [], errors = [];
         function parseCSVRow(line) { const fields = []; let cur = "", inQ = false; for (let i = 0; i < line.length; i++) { const c = line[i]; if (c === '"') { if (inQ && line[i+1] === '"') { cur += '"'; i++; } else { inQ = !inQ; } } else if (c === "," && !inQ) { fields.push(cur); cur = ""; } else { cur += c; } } fields.push(cur); return fields.map(s => s.trim()); }
         for (const [idx, line] of dataLines.entries()) {
-          const [name, amount, type, frequency, startDate, endDate] = parseCSVRow(line);
+          const [name, amount, type, frequency, startDate, endDate, categoryNameRaw] = parseCSVRow(line);
           const rowNum = idx + 2;
           if (!name) { errors.push(`Row ${rowNum}: missing name`); continue; }
           if (isNaN(parseFloat(amount))) { errors.push(`Row ${rowNum}: invalid amount`); continue; }
           if (!["income","expense"].includes(type?.toLowerCase())) { errors.push(`Row ${rowNum}: type must be income or expense`); continue; }
           if (!FREQUENCIES.includes(frequency)) { errors.push(`Row ${rowNum}: invalid frequency`); continue; }
           if (!startDate || isNaN(new Date(startDate))) { errors.push(`Row ${rowNum}: invalid start date`); continue; }
+          const resolvedType = type.toLowerCase();
+          const matchedCategory = categoryNameRaw && categoryNameRaw.toLowerCase() !== "uncategorized"
+            ? categories.find(c => c.type === resolvedType && c.name.toLowerCase() === categoryNameRaw.toLowerCase())
+            : null;
           try {
-            const item = await apiFetch("/items", { method: "POST", body: JSON.stringify({ name, amount: parseFloat(amount), type: type.toLowerCase(), frequency, startDate, endDate: endDate || "" }) }, auth.token);
-            imported.push({ ...item, startDate: item.start_date || item.startDate, endDate: (() => { const ed = item.end_date || item.endDate || ""; return ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; })() });
+            const item = await apiFetch("/items", { method: "POST", body: JSON.stringify({ name, amount: parseFloat(amount), type: resolvedType, frequency, startDate, endDate: endDate || "", categoryId: matchedCategory ? matchedCategory.id : null }) }, auth.token);
+            imported.push({ ...item, startDate: item.start_date || item.startDate, endDate: (() => { const ed = item.end_date || item.endDate || ""; return ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; })(), categoryId: item.categoryId ?? null });
           } catch { errors.push(`Row ${rowNum}: server error`); }
         }
         if (errors.length) setImportError(`Skipped ${errors.length} row(s): ${errors.join(" | ")}`);
@@ -660,6 +762,28 @@ export default function App() {
     });
   }, [items, effectiveBalance, forecastDays, today, endDate, reconciled, cancelled, overrides]);
 
+  const categoryBreakdown = useMemo(() => {
+    const totals = {};
+    items.forEach(item => {
+      if (item.type !== "expense") return;
+      getOccurrences(item, today, endDate).forEach(d => {
+        const dateStr = d.toISOString().slice(0,10);
+        const key = `${item.id}_${dateStr}`;
+        if (reconciled[key] || cancelled[key]) return;
+        const amt = overrides[key] !== undefined ? overrides[key] : item.amount;
+        const catExists = categories.some(c => c.id === item.categoryId);
+        const catKey = catExists ? item.categoryId : "uncategorized";
+        totals[catKey] = (totals[catKey] || 0) + amt;
+      });
+    });
+    return Object.entries(totals)
+      .map(([catKey, total]) => ({
+        name: catKey === "uncategorized" ? "Uncategorized" : categoryName(Number(catKey)),
+        total,
+      }))
+      .sort((a, b) => b.total - a.total);
+  }, [items, today, endDate, reconciled, cancelled, overrides, categories]);
+
   const minBalance = useMemo(() => chartData.length ? Math.min(...chartData.map(d => d.balance)) : 0, [chartData]);
   const endBalance = chartData[chartData.length - 1]?.balance ?? effectiveBalance;
   const lowBalanceDays = chartData.filter(d => d.balance < lowBalanceThreshold).length;
@@ -706,6 +830,11 @@ export default function App() {
       .sort((a, b) => b.startDate.localeCompare(a.startDate)); // most recent first
   }, [items, today]);
 
+  const expenseCategories = useMemo(() => categories.filter(c => c.type === "expense"), [categories]);
+  const incomeCategories = useMemo(() => categories.filter(c => c.type === "income"), [categories]);
+  function categoriesForType(type) { return type === "income" ? incomeCategories : expenseCategories; }
+  function categoryName(categoryId) { return categories.find(c => c.id === categoryId)?.name || "Uncategorized"; }
+
   const cardStyle = { background: T.surface, borderRadius: 14, padding: "20px 24px", border: `1px solid ${T.border}` };
   const labelStyle = { color: T.textMuted, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, display: "block" };
   const inputStyle = { background: T.inputBg, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, padding: "10px 14px", fontFamily: "'DM Mono', monospace", fontSize: 14, width: "100%", boxSizing: "border-box", outline: "none" };
@@ -725,6 +854,7 @@ export default function App() {
     <div style={{ minHeight: "100vh", width: "100%", boxSizing: "border-box", background: T.bg, color: T.text, fontFamily: "'DM Sans', sans-serif", padding: "32px 20px", transition: "background 0.2s, color 0.2s" }}>
       <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
       {showAdmin && <AdminPanel token={auth.token} currentUser={auth.username} T={T} onClose={() => setShowAdmin(false)} onFactoryReset={loadData} />}
+      {showCategories && <CategoriesPanel token={auth.token} T={T} categories={categories} onClose={() => setShowCategories(false)} onChange={setCategories} />}
 
       <div style={{ maxWidth: 1400, width: "100%", margin: "0 auto" }}>
         {/* Header */}
@@ -738,6 +868,7 @@ export default function App() {
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button onClick={() => setDarkMode(d => !d)} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: "8px 16px", cursor: "pointer", color: T.text, fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600 }}>{darkMode ? "☀️ Light" : "🌙 Dark"}</button>
+            <button onClick={() => setShowCategories(true)} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: "8px 16px", cursor: "pointer", color: T.text, fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600 }}>🏷️ Categories</button>
             {auth.is_admin && <button onClick={() => setShowAdmin(true)} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 20, padding: "8px 16px", cursor: "pointer", color: T.text, fontFamily: "'DM Sans', sans-serif", fontSize: 13, fontWeight: 600 }}>⚙️ Admin</button>}
             <button onClick={handleLogout} style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 20, padding: "8px 16px", cursor: "pointer", color: T.textMuted, fontFamily: "'DM Sans', sans-serif", fontSize: 13 }}>Sign Out</button>
           </div>
@@ -825,6 +956,32 @@ export default function App() {
           </div>
         )}
 
+        {activeTab === "chart" && categoryBreakdown.length > 0 && (
+          <div style={{ ...cardStyle, marginTop: 16 }}>
+            <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 600, color: T.text }}>Expense Breakdown by Category</h3>
+            <ResponsiveContainer width="100%" height={320}>
+              <PieChart>
+                <Pie data={categoryBreakdown} dataKey="total" nameKey="name" cx="50%" cy="50%" outerRadius={110}
+                     label={({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }) => {
+                       const RADIAN = Math.PI / 180;
+                       const radius = innerRadius + (outerRadius - innerRadius) * 1.3;
+                       const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                       const y = cy + radius * Math.sin(-midAngle * RADIAN);
+                       return (
+                         <text x={x} y={y} fill={T.textMuted} fontSize={12} fontFamily="'DM Mono', monospace" textAnchor={x > cx ? "start" : "end"} dominantBaseline="central">
+                           {`${name} ${(percent * 100).toFixed(0)}%`}
+                         </text>
+                       );
+                     }}>
+                  {categoryBreakdown.map((entry, idx) => <Cell key={entry.name} fill={colorForCategory(idx)} />)}
+                </Pie>
+                <Tooltip formatter={v => formatCurrency(v)} contentStyle={{ background: T.tooltipBg, border: `1px solid ${T.border}`, borderRadius: 8 }} />
+                <Legend wrapperStyle={{ fontFamily: "'DM Mono', monospace", fontSize: 12, color: T.textMuted }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+
         {/* Override Modal */}
         {overrideModal && (
           <OverrideModal
@@ -864,7 +1021,8 @@ export default function App() {
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
                             <div><label style={labelStyle}>Name</label><input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} style={inputStyle} /></div>
                             <div><label style={labelStyle}>Amount ($)</label><input type="number" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: e.target.value})} style={inputStyle} /></div>
-                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value, categoryId: null})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Category</label><select value={editForm.categoryId || ""} onChange={e => setEditForm({...editForm, categoryId: e.target.value ? Number(e.target.value) : null})} style={inputStyle}><option value="">Uncategorized</option>{categoriesForType(editForm.type).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
                             <div><label style={labelStyle}>Frequency</label><select value={editForm.frequency} onChange={e => setEditForm({...editForm, frequency: e.target.value})} style={inputStyle}>{FREQUENCIES.filter(f => f !== "One-time").map(f => <option key={f}>{f}</option>)}</select></div>
                             <div><label style={labelStyle}>Start Date</label><input type="date" value={editForm.startDate} onChange={e => setEditForm({...editForm, startDate: e.target.value})} style={inputStyle} /></div>
                             <div><label style={labelStyle}>End Date (optional)</label><input type="date" value={editForm.endDate || ""} onChange={e => setEditForm({...editForm, endDate: e.target.value})} style={inputStyle} /></div>
@@ -881,7 +1039,7 @@ export default function App() {
                             <div>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
                               <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>
-                                {item.frequency} · next: {nextDate}{item.endDate ? ` · ends ${item.endDate}` : ""}
+                                {item.frequency} · next: {nextDate}{item.endDate ? ` · ends ${item.endDate}` : ""} · {categoryName(item.categoryId)}
                               </div>
                             </div>
                           </div>
@@ -903,7 +1061,7 @@ export default function App() {
                               style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.accent, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}>
                               ✏️ Next
                             </button>
-                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
+                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "", categoryId: item.categoryId || "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
                             <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
                           </div>
                         </div>
@@ -927,7 +1085,8 @@ export default function App() {
                           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10, marginBottom: 10 }}>
                             <div><label style={labelStyle}>Name</label><input value={editForm.name} onChange={e => setEditForm({...editForm, name: e.target.value})} style={inputStyle} /></div>
                             <div><label style={labelStyle}>Amount ($)</label><input type="number" value={editForm.amount} onChange={e => setEditForm({...editForm, amount: e.target.value})} style={inputStyle} /></div>
-                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Type</label><select value={editForm.type} onChange={e => setEditForm({...editForm, type: e.target.value, categoryId: null})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                            <div><label style={labelStyle}>Category</label><select value={editForm.categoryId || ""} onChange={e => setEditForm({...editForm, categoryId: e.target.value ? Number(e.target.value) : null})} style={inputStyle}><option value="">Uncategorized</option>{categoriesForType(editForm.type).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
                             <div><label style={labelStyle}>Date</label><input type="date" value={editForm.startDate} onChange={e => setEditForm({...editForm, startDate: e.target.value})} style={inputStyle} /></div>
                           </div>
                           <div style={{ display: "flex", gap: 8 }}>
@@ -941,14 +1100,14 @@ export default function App() {
                             <div style={{ width: 8, height: 8, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
                             <div>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
-                              <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>{item.startDate}</div>
+                              <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>{item.startDate} · {categoryName(item.categoryId)}</div>
                             </div>
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                             <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
                               {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
                             </span>
-                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: "One-time", startDate: item.startDate, endDate: "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
+                            <button onClick={() => { setEditingItemId(item.id); setEditForm({ name: item.name, amount: String(item.amount), type: item.type, frequency: "One-time", startDate: item.startDate, endDate: "", categoryId: item.categoryId || "" }); }} style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif" }} title="Edit item">✎</button>
                             <button onClick={() => removeItem(item.id)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
                           </div>
                         </div>
@@ -999,7 +1158,8 @@ export default function App() {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, marginBottom: 14 }}>
                   <div><label style={labelStyle}>Name</label><input placeholder="e.g. Netflix" value={form.name} onChange={e => setForm({...form, name: e.target.value})} style={inputStyle} /></div>
                   <div><label style={labelStyle}>Amount ($)</label><input type="number" placeholder="0" value={form.amount} onChange={e => setForm({...form, amount: e.target.value})} style={inputStyle} /></div>
-                  <div><label style={labelStyle}>Type</label><select value={form.type} onChange={e => setForm({...form, type: e.target.value})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                  <div><label style={labelStyle}>Type</label><select value={form.type} onChange={e => setForm({...form, type: e.target.value, categoryId: null})} style={inputStyle}><option value="income">Income</option><option value="expense">Expense</option></select></div>
+                  <div><label style={labelStyle}>Category</label><select value={form.categoryId || ""} onChange={e => setForm({...form, categoryId: e.target.value ? Number(e.target.value) : null})} style={inputStyle}><option value="">Uncategorized</option>{categoriesForType(form.type).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
                   <div><label style={labelStyle}>Frequency</label><select value={form.frequency} onChange={e => setForm({...form, frequency: e.target.value})} style={inputStyle}>{FREQUENCIES.map(f => <option key={f}>{f}</option>)}</select></div>
                   <div><label style={labelStyle}>{form.frequency === "One-time" ? "Date" : "Start Date"}</label><input type="date" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} style={inputStyle} /></div>
                   {form.frequency !== "One-time" && <div><label style={labelStyle}>End Date (optional)</label><input type="date" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} style={inputStyle} /></div>}
