@@ -613,8 +613,9 @@ export default function App() {
   async function saveOverride(key, amount, applyToAllItemId) {
     const parsed = parseFloat(amount);
     if (applyToAllItemId) {
+      const item = items.find(i => i.id === applyToAllItemId);
       // Update the item's base amount on the server
-      await apiFetch(`/items/${applyToAllItemId}`, { method: "PUT", body: JSON.stringify({ amount: parsed }) }, auth.token);
+      await apiFetch(`/items/${applyToAllItemId}`, { method: "PUT", body: JSON.stringify({ name: item.name, amount: parsed, type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "", categoryId: item.categoryId }) }, auth.token);
       // Update local items state
       setItems(prev => prev.map(i => i.id === applyToAllItemId ? { ...i, amount: parsed } : i));
       // Remove any existing single-instance override for this occurrence
