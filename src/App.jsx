@@ -364,7 +364,7 @@ function CategoriesPanel({ token, T, categories, onClose, onChange }) {
 }
 
 // ── Calendar View ─────────────────────────────────────────────────────────────
-function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggleCancelled, T }) {
+function CalendarView({ items, reconciled, cancelled, overrides, onToggleReconcile, onToggleCancelled, T }) {
   const today = useMemo(() => { const now = new Date(); return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())); }, []);
   const [calYear, setCalYear] = useState(today.getUTCFullYear());
   const [calMonth, setCalMonth] = useState(today.getUTCMonth());
@@ -378,11 +378,12 @@ function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggl
         const day = d.getUTCDate();
         if (!map[day]) map[day] = [];
         const key = `${item.id}_${d.toISOString().slice(0,10)}`;
-        map[day].push({ item, key, isReconciled: !!reconciled[key], isCancelled: !!cancelled[key] });
+        const effectiveAmount = overrides[key] !== undefined ? overrides[key] : item.amount;
+        map[day].push({ item, key, effectiveAmount, isReconciled: !!reconciled[key], isCancelled: !!cancelled[key] });
       });
     });
     return map;
-  }, [items, reconciled, cancelled, monthStart, monthEnd]);
+  }, [items, reconciled, cancelled, overrides, monthStart, monthEnd]);
 
   const firstDow = monthStart.getUTCDay();
   const daysInMonth = monthEnd.getUTCDate();
@@ -419,7 +420,7 @@ function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggl
             <div key={day} style={{ background: T.calDay, border: `1px solid ${isToday ? T.accent : T.calDayBorder}`, borderRadius: 10, padding: "6px 8px", minHeight: 80, overflow: "hidden" }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: isToday ? 700 : 400, color: isToday ? T.accent : T.textMuted, marginBottom: 4 }}>{day}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {dayEvents.map(({ item, key, isReconciled, isCancelled }) => {
+                {dayEvents.map(({ item, key, effectiveAmount, isReconciled, isCancelled }) => {
                   const color = isCancelled ? T.textMuted : isReconciled ? T.textMuted : (item.type === "income" ? T.income : T.expense);
                   const bg = isCancelled ? T.surface2 : isReconciled ? T.surface2 : (item.type === "income" ? T.income + "22" : T.expense + "22");
                   const border = isCancelled ? T.border : isReconciled ? T.border : (item.type === "income" ? T.income + "55" : T.expense + "55");
@@ -427,7 +428,7 @@ function CalendarView({ items, reconciled, cancelled, onToggleReconcile, onToggl
                     <div key={key} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 4, padding: "2px 4px", fontSize: 10, fontFamily: "'DM Sans', sans-serif", fontWeight: 600, color, overflow: "hidden" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
                         <span style={{ flex: 1, textDecoration: isCancelled ? "line-through" : isReconciled ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", opacity: isCancelled ? 0.5 : 1 }}>
-                          {item.name} <span style={{ opacity: 0.8 }}>{item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}</span>
+                          {item.name} <span style={{ opacity: 0.8 }}>{item.type === "income" ? "+" : "-"}{formatCurrency(effectiveAmount)}</span>
                         </span>
                         <button onClick={() => onToggleReconcile(key)} title={isReconciled ? "Un-reconcile" : "Reconcile"}
                           style={{ background: isReconciled ? T.accent + "33" : "none", border: `1px solid ${T.accent}55`, borderRadius: 3, color: T.accent, cursor: "pointer", fontSize: 9, lineHeight: 1, padding: "1px 3px", flexShrink: 0, fontWeight: 700 }}>✓</button>
@@ -1013,6 +1014,8 @@ export default function App() {
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {recurringItems.map(item => {
                   const nextDate = getNextDate(item);
+                  const nextKey = `${item.id}_${nextDate}`;
+                  const nextOverride = overrides[nextKey];
                   const itemOverrides = Object.keys(overrides).filter(k => k.startsWith(`${item.id}_`));
                   const isEditing = editingItemId === item.id;
                   return (
@@ -1051,7 +1054,8 @@ export default function App() {
                               </span>
                             )}
                             <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 700, fontSize: 15, color: item.type === "income" ? T.income : T.expense }}>
-                              {item.type === "income" ? "+" : "-"}{formatCurrency(item.amount)}
+                              {item.type === "income" ? "+" : "-"}{formatCurrency(nextOverride !== undefined ? nextOverride : item.amount)}
+                              {nextOverride !== undefined && <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 4, textDecoration: "line-through", fontWeight: 400 }}>{formatCurrency(item.amount)}</span>}
                             </span>
                             <button
                               onClick={() => {
@@ -1226,7 +1230,7 @@ export default function App() {
 
         {activeTab === "calendar" && (
           <div style={cardStyle}>
-            <CalendarView items={items} reconciled={reconciled} cancelled={cancelled} onToggleReconcile={toggleReconcile} onToggleCancelled={toggleCancelled} T={T} />
+            <CalendarView items={items} reconciled={reconciled} cancelled={cancelled} overrides={overrides} onToggleReconcile={toggleReconcile} onToggleCancelled={toggleCancelled} T={T} />
           </div>
         )}
       </div>
