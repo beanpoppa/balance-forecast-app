@@ -729,21 +729,7 @@ export default function App() {
       events[key] = 0;
       eventDetails[key] = [];
     }
-    const todayKey = today.toISOString().slice(0,10);
-    const yesterday = addDays(today, -1);
     items.forEach(item => {
-      // Past-due unreconciled occurrences: apply at today's position
-      const lookbackStart = new Date(Math.max(new Date(item.startDate).getTime(), addDays(today, -365).getTime()));
-      getOccurrences(item, lookbackStart, yesterday).forEach(d => {
-        const dateStr = d.toISOString().slice(0,10);
-        const recKey = `${item.id}_${dateStr}`;
-        if (!reconciled[recKey] && !cancelled[recKey]) {
-          const overrideAmt = overrides[recKey] !== undefined ? overrides[recKey] : item.amount;
-          const delta = item.type === "income" ? overrideAmt : -overrideAmt;
-          events[todayKey] += delta;
-          eventDetails[todayKey].push({ name: item.name, amount: overrideAmt, type: item.type, delta, isOverridden: overrides[recKey] !== undefined, itemId: item.id, dateStr: todayKey });
-        }
-      });
       // Future occurrences from today onward
       getOccurrences(item, today, endDate).forEach(d => {
         const key = d.toISOString().slice(0,10);
