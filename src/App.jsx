@@ -65,6 +65,31 @@ function getOccurrences(item, startDate, endDate) {
   }
   return dates;
 }
+// Occurrences with single-occurrence date moves applied. Each occurrence keeps
+// its original key (`${id}_${originalDate}`) so overrides/reconciled/cancelled
+// stay attached; `dateStr` is the effective (possibly moved) date.
+function getEffectiveOccurrences(item, startDate, endDate, moved = {}) {
+  const startStr = startDate.toISOString().slice(0, 10), endStr = endDate.toISOString().slice(0, 10);
+  const out = [];
+  getOccurrences(item, startDate, endDate).forEach(d => {
+    const origDateStr = d.toISOString().slice(0, 10);
+    const key = `${item.id}_${origDateStr}`;
+    const dateStr = moved[key] || origDateStr;
+    if (dateStr >= startStr && dateStr <= endStr) out.push({ date: new Date(dateStr + "T00:00:00Z"), dateStr, origDateStr, key, isMoved: !!moved[key] });
+  });
+  // Occurrences moved INTO the window from outside it
+  const prefix = `${item.id}_`;
+  Object.entries(moved).forEach(([key, dateStr]) => {
+    if (!key.startsWith(prefix) || dateStr < startStr || dateStr > endStr) return;
+    const origDateStr = key.slice(prefix.length);
+    if (origDateStr >= startStr && origDateStr <= endStr) return; // already handled above
+    const orig = new Date(origDateStr + "T00:00:00Z");
+    if (getOccurrences(item, orig, orig).length === 0) return; // stale move, not a real occurrence
+    out.push({ date: new Date(dateStr + "T00:00:00Z"), dateStr, origDateStr, key, isMoved: true });
+  });
+  return out.sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+}
+
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 const darkTheme = {
@@ -364,7 +389,7 @@ function CategoriesPanel({ token, T, categories, onClose, onChange }) {
 }
 
 // ── Calendar View ─────────────────────────────────────────────────────────────
-function CalendarView({ items, reconciled, cancelled, overrides, onToggleReconcile, onToggleCancelled, T }) {
+function CalendarView({ items, reconciled, cancelled, overrides, moved, onToggleReconcile, onToggleCancelled, onEditOccurrence, T }) {
   const today = useMemo(() => { const now = new Date(); return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate())); }, []);
   const [calYear, setCalYear] = useState(today.getUTCFullYear());
   const [calMonth, setCalMonth] = useState(today.getUTCMonth());
@@ -374,16 +399,15 @@ function CalendarView({ items, reconciled, cancelled, overrides, onToggleReconci
   const eventsByDay = useMemo(() => {
     const map = {};
     items.forEach(item => {
-      getOccurrences(item, monthStart, monthEnd).forEach(d => {
-        const day = d.getUTCDate();
+      getEffectiveOccurrences(item, monthStart, monthEnd, moved).forEach(({ date, dateStr, origDateStr, key, isMoved }) => {
+        const day = date.getUTCDate();
         if (!map[day]) map[day] = [];
-        const key = `${item.id}_${d.toISOString().slice(0,10)}`;
         const effectiveAmount = overrides[key] !== undefined ? overrides[key] : item.amount;
-        map[day].push({ item, key, effectiveAmount, isReconciled: !!reconciled[key], isCancelled: !!cancelled[key] });
+        map[day].push({ item, key, dateStr, origDateStr, isMoved, effectiveAmount, isReconciled: !!reconciled[key], isCancelled: !!cancelled[key] });
       });
     });
     return map;
-  }, [items, reconciled, cancelled, overrides, monthStart, monthEnd]);
+  }, [items, reconciled, cancelled, overrides, moved, monthStart, monthEnd]);
 
   const firstDow = monthStart.getUTCDay();
   const daysInMonth = monthEnd.getUTCDate();
@@ -420,15 +444,17 @@ function CalendarView({ items, reconciled, cancelled, overrides, onToggleReconci
             <div key={day} style={{ background: T.calDay, border: `1px solid ${isToday ? T.accent : T.calDayBorder}`, borderRadius: 10, padding: "6px 8px", minHeight: 80, overflow: "hidden" }}>
               <div style={{ fontFamily: "'DM Mono', monospace", fontSize: 12, fontWeight: isToday ? 700 : 400, color: isToday ? T.accent : T.textMuted, marginBottom: 4 }}>{day}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                {dayEvents.map(({ item, key, effectiveAmount, isReconciled, isCancelled }) => {
+                {dayEvents.map(({ item, key, dateStr: occDate, origDateStr, isMoved, effectiveAmount, isReconciled, isCancelled }) => {
                   const color = isCancelled ? T.textMuted : isReconciled ? T.textMuted : (item.type === "income" ? T.income : T.expense);
                   const bg = isCancelled ? T.surface2 : isReconciled ? T.surface2 : (item.type === "income" ? T.income + "22" : T.expense + "22");
                   const border = isCancelled ? T.border : isReconciled ? T.border : (item.type === "income" ? T.income + "55" : T.expense + "55");
                   return (
                     <div key={key} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 4, padding: "2px 4px", fontSize: 10, fontFamily: "'DM Sans', sans-serif", fontWeight: 600, color, overflow: "hidden" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: 2, minWidth: 0 }}>
-                        <span style={{ flex: 1, textDecoration: isCancelled ? "line-through" : isReconciled ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", opacity: isCancelled ? 0.5 : 1 }}>
-                          {item.name} <span style={{ opacity: 0.8 }}>{item.type === "income" ? "+" : "-"}{formatCurrency(effectiveAmount)}</span>
+                        <span onClick={() => !isReconciled && !isCancelled && onEditOccurrence({ item, key, dateStr: occDate, origDateStr, effectiveAmount })}
+                          title={isMoved ? `Moved from ${origDateStr} — click to edit` : "Click to edit this occurrence"}
+                          style={{ flex: 1, cursor: isReconciled || isCancelled ? "default" : "pointer", textDecoration: isCancelled ? "line-through" : isReconciled ? "line-through" : "none", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", opacity: isCancelled ? 0.5 : 1 }}>
+                          {isMoved && "↷ "}{item.name} <span style={{ opacity: 0.8 }}>{item.type === "income" ? "+" : "-"}{formatCurrency(effectiveAmount)}</span>
                         </span>
                         <button onClick={() => onToggleReconcile(key)} title={isReconciled ? "Un-reconcile" : "Reconcile"}
                           style={{ background: isReconciled ? T.accent + "33" : "none", border: `1px solid ${T.accent}55`, borderRadius: 3, color: T.accent, cursor: "pointer", fontSize: 9, lineHeight: 1, padding: "1px 3px", flexShrink: 0, fontWeight: 700 }}>✓</button>
@@ -453,55 +479,75 @@ function CalendarView({ items, reconciled, cancelled, overrides, onToggleReconci
   );
 }
 
-// ── Override Modal ───────────────────────────────────────────────────────────
-function OverrideModal({ modal, onSave, onDelete, onClose, T }) {
+// ── Occurrence Modal (amount + date, this-only or this-and-future) ──────────
+function OverrideModal({ modal, onSave, onReset, onClose, T }) {
   const [amount, setAmount] = useState(String(modal.currentAmount));
-  const [applyToAll, setApplyToAll] = useState(false);
+  const [date, setDate] = useState(modal.date);
+  const [scope, setScope] = useState("one"); // "one" | "future"
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
   const isOverridden = modal.currentAmount !== modal.defaultAmount;
-  const isRecurring = !!modal.itemId; // itemId only passed for recurring items
+  const isMoved = modal.date !== modal.origDate;
+  const isRecurring = modal.recurring;
   const inp = { background: T.inputBg, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, padding: "10px 14px", fontFamily: "'DM Mono', monospace", fontSize: 15, width: "100%", boxSizing: "border-box", outline: "none" };
+  const lbl = { color: T.textMuted, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, display: "block" };
 
-  function handleSave() {
-    onSave(modal.key, amount, applyToAll ? modal.itemId : null);
+  async function handleSave() {
+    if (amount === "" || isNaN(parseFloat(amount))) { setError("Enter a valid amount."); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { setError("Enter a valid date."); return; }
+    setSaving(true); setError("");
+    try { await onSave({ amount, date, scope }); }
+    catch (e) { setError(e.message || "Could not save."); setSaving(false); }
   }
+
+  const scopeOption = (value, title, sub) => (
+    <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 14px", background: scope === value ? (T.accent + "15") : T.surface2, borderRadius: 8, border: `1px solid ${scope === value ? T.accent + "44" : T.border}`, transition: "all 0.15s" }}>
+      <input type="radio" name="occ-scope" checked={scope === value} onChange={() => setScope(value)} style={{ width: 16, height: 16, accentColor: T.accent, cursor: "pointer" }} />
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{title}</div>
+        <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>{sub}</div>
+      </div>
+    </label>
+  );
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }}>
-      <div style={{ background: T.bg, borderRadius: 16, border: `1px solid ${T.border}`, padding: "28px 32px", width: "100%", maxWidth: 400 }}>
+      <div style={{ background: T.bg, borderRadius: 16, border: `1px solid ${T.border}`, padding: "28px 32px", width: "100%", maxWidth: 420 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: T.text }}>✏️ Override Amount</h2>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: T.text }}>✏️ Edit Occurrence</h2>
           <button onClick={onClose} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontSize: 20 }}>✕</button>
         </div>
         <p style={{ color: T.textMuted, fontSize: 13, marginBottom: 20, marginTop: 4 }}>
-          <strong style={{ color: T.text }}>{modal.itemName}</strong> on {modal.date}<br />
+          <strong style={{ color: T.text }}>{modal.itemName}</strong> on {modal.date}{isMoved && <> (originally {modal.origDate})</>}<br />
           Default amount: <span style={{ fontFamily: "'DM Mono', monospace", color: T.accent }}>${modal.defaultAmount}</span>
         </p>
-        <label style={{ color: T.textMuted, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 6, display: "block" }}>Amount ($)</label>
-        <input
-          type="number"
-          value={amount}
-          onChange={e => { setAmount(e.target.value); if (applyToAll) setApplyToAll(false); }}
-          onKeyDown={e => e.key === "Enter" && handleSave()}
-          style={{ ...inp, marginBottom: 12 }}
-          autoFocus
-        />
-        {isRecurring && (
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", marginBottom: 16, padding: "10px 14px", background: applyToAll ? (T.accent + "15") : T.surface2, borderRadius: 8, border: `1px solid ${applyToAll ? T.accent + "44" : T.border}`, transition: "all 0.15s" }}>
-            <input type="checkbox" checked={applyToAll} onChange={e => setApplyToAll(e.target.checked)} style={{ width: 16, height: 16, accentColor: T.accent, cursor: "pointer" }} />
+        <div style={{ display: "grid", gridTemplateColumns: isRecurring ? "1fr 1fr" : "1fr", gap: 10, marginBottom: 14 }}>
+          <div>
+            <label style={lbl}>Amount ($)</label>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} onKeyDown={e => e.key === "Enter" && handleSave()} style={inp} autoFocus />
+          </div>
+          {isRecurring && (
             <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Apply to all future occurrences</div>
-              <div style={{ fontSize: 11, color: T.textMuted, marginTop: 2 }}>Updates the default amount for this item going forward</div>
+              <label style={lbl}>Date</label>
+              <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inp} />
             </div>
-          </label>
+          )}
+        </div>
+        {isRecurring && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
+            {scopeOption("one", "This occurrence only", "Changes only this date's amount and/or date")}
+            {scopeOption("future", "This and all future occurrences", "Updates the amount and/or reschedules the series from here on")}
+          </div>
         )}
-        {!isRecurring && <div style={{ marginBottom: 16 }} />}
+        {!isRecurring && <div style={{ marginBottom: 4 }} />}
+        {error && <div style={{ color: T.danger, fontSize: 13, marginBottom: 12 }}>{error}</div>}
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={handleSave} style={{ background: `linear-gradient(135deg, ${T.accent}, ${T.accentBlue})`, border: "none", color: "#0a0f1a", padding: "10px 24px", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", fontSize: 14, flex: 1 }}>
-            {applyToAll ? "Update All Future" : "Save Override"}
+          <button onClick={handleSave} disabled={saving} style={{ background: `linear-gradient(135deg, ${T.accent}, ${T.accentBlue})`, border: "none", color: "#0a0f1a", padding: "10px 24px", borderRadius: 8, cursor: "pointer", fontWeight: 700, fontFamily: "'DM Sans', sans-serif", fontSize: 14, flex: 1, opacity: saving ? 0.6 : 1 }}>
+            {saving ? "Saving…" : scope === "future" ? "Update All Future" : "Save"}
           </button>
-          {isOverridden && !applyToAll && (
-            <button onClick={() => onDelete(modal.key)} style={{ background: "none", border: `1px solid ${T.danger}44`, color: T.danger, padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>
-              Remove
+          {(isOverridden || isMoved) && scope === "one" && (
+            <button onClick={onReset} title="Restore this occurrence's default amount and original date" style={{ background: "none", border: `1px solid ${T.danger}44`, color: T.danger, padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>
+              Reset
             </button>
           )}
           <button onClick={onClose} style={{ background: "none", border: `1px solid ${T.border}`, color: T.textMuted, padding: "10px 16px", borderRadius: 8, cursor: "pointer", fontFamily: "'DM Sans', sans-serif", fontSize: 14 }}>
@@ -529,6 +575,7 @@ export default function App() {
   const [reconciled, setReconciled] = useState({});
   const [cancelled, setCancelled] = useState({});
   const [overrides, setOverrides] = useState({});
+  const [moved, setMoved] = useState({}); // { "<itemId>_<origDate>": "<newDate>" }
   const [loading, setLoading] = useState(true);
   const [categories, setCategories] = useState([]); // [{id, name, type}]
   const [showAdmin, setShowAdmin] = useState(false);
@@ -554,27 +601,51 @@ export default function App() {
     setAuth(null);
   }
 
+  function normalizeItem(i) {
+    const ed = i.end_date || i.endDate || "";
+    const endDate = ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : "";
+    return { ...i, startDate: i.start_date || i.startDate, endDate, categoryId: i.categoryId ?? null };
+  }
+
+  // Re-fetch items and per-occurrence data without the full-page loading state
+  async function refreshItemData() {
+    const [itemsData, reconciledData, cancelledData, overridesData, movedData] = await Promise.all([
+      apiFetch("/items", {}, auth.token),
+      apiFetch("/reconciled", {}, auth.token),
+      apiFetch("/cancelled", {}, auth.token),
+      apiFetch("/overrides", {}, auth.token),
+      apiFetch("/moved", {}, auth.token).catch(() => ({})),
+    ]);
+    setItems(itemsData.map(normalizeItem));
+    setReconciled(reconciledData);
+    setCancelled(cancelledData);
+    setOverrides(overridesData);
+    setMoved(movedData);
+  }
+
   const loadData = useCallback(async () => {
     if (!auth) return;
     setLoading(true);
     try {
-      const [settings, itemsData, reconciledData, cancelledData, overridesData, categoriesData] = await Promise.all([
+      const [settings, itemsData, reconciledData, cancelledData, overridesData, categoriesData, movedData] = await Promise.all([
         apiFetch("/settings", {}, auth.token),
         apiFetch("/items", {}, auth.token),
         apiFetch("/reconciled", {}, auth.token),
         apiFetch("/cancelled", {}, auth.token),
         apiFetch("/overrides", {}, auth.token),
         apiFetch("/categories", {}, auth.token),
+        apiFetch("/moved", {}, auth.token).catch(() => ({})), // tolerate older backend
       ]);
       skipNextSettingsSave.current = true; // B008: skip the spurious save triggered by these state updates
       setStartingBalance(settings.starting_balance);
       setLowBalanceThreshold(settings.low_balance_threshold);
       setForecastDays(settings.forecast_days);
       setDarkMode(!!settings.dark_mode);
-      setItems(itemsData.map(i => { const ed = i.end_date || i.endDate || ""; const endDate = ed && !isNaN(new Date(ed)) && ed.includes('-') ? ed : ""; return { ...i, startDate: i.start_date || i.startDate, endDate, categoryId: i.categoryId ?? null }; }));
+      setItems(itemsData.map(normalizeItem));
       setReconciled(reconciledData);
       setCancelled(cancelledData);
       setOverrides(overridesData);
+      setMoved(movedData);
       setCategories(categoriesData);
     } catch (e) { if (e.message?.includes("token")) handleLogout(); }
     setLoading(false);
@@ -611,28 +682,88 @@ export default function App() {
     setCancelled(prev => { const next = { ...prev }; if (res.cancelled) next[key] = true; else delete next[key]; return next; });
   }
 
-  async function saveOverride(key, amount, applyToAllItemId) {
-    const parsed = parseFloat(amount);
-    if (applyToAllItemId) {
-      const item = items.find(i => i.id === applyToAllItemId);
-      // Update the item's base amount on the server
-      await apiFetch(`/items/${applyToAllItemId}`, { method: "PUT", body: JSON.stringify({ name: item.name, amount: parsed, type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "", categoryId: item.categoryId }) }, auth.token);
-      // Update local items state
-      setItems(prev => prev.map(i => i.id === applyToAllItemId ? { ...i, amount: parsed } : i));
-      // Remove any existing single-instance override for this occurrence
+  async function setOverrideValue(key, value) { // value === null removes it
+    if (value === null) {
+      if (overrides[key] === undefined) return;
       await apiFetch(`/overrides/${encodeURIComponent(key)}`, { method: "DELETE" }, auth.token);
       setOverrides(prev => { const next = { ...prev }; delete next[key]; return next; });
     } else {
-      await apiFetch("/overrides", { method: "POST", body: JSON.stringify({ key, amount: parsed }) }, auth.token);
-      setOverrides(prev => ({ ...prev, [key]: parsed }));
+      await apiFetch("/overrides", { method: "POST", body: JSON.stringify({ key, amount: value }) }, auth.token);
+      setOverrides(prev => ({ ...prev, [key]: value }));
+    }
+  }
+
+  async function setMovedDate(key, newDate) { // newDate === null removes it
+    if (newDate === null) {
+      if (!moved[key]) return;
+      await apiFetch(`/moved/${encodeURIComponent(key)}`, { method: "DELETE" }, auth.token);
+      setMoved(prev => { const next = { ...prev }; delete next[key]; return next; });
+    } else {
+      await apiFetch("/moved", { method: "POST", body: JSON.stringify({ key, newDate }) }, auth.token);
+      setMoved(prev => ({ ...prev, [key]: newDate }));
+    }
+  }
+
+  // Map each per-occurrence annotation date (>= fromDate) of the old series to the
+  // corresponding (same index) occurrence date of the rescheduled series.
+  function buildRescheduleDateMap(item, fromDate, newStartDate) {
+    const prefix = `${item.id}_`;
+    const annotated = [reconciled, cancelled, overrides, moved]
+      .flatMap(obj => Object.keys(obj))
+      .filter(k => k.startsWith(prefix))
+      .map(k => k.slice(prefix.length))
+      .filter(d => d >= fromDate);
+    if (!annotated.length) return {};
+    const maxDate = annotated.reduce((a, b) => (a > b ? a : b));
+    const from = new Date(fromDate + "T00:00:00Z");
+    const oldDates = getOccurrences(item, from, new Date(maxDate + "T00:00:00Z")).map(d => d.toISOString().slice(0, 10));
+    const newFrom = new Date(newStartDate + "T00:00:00Z");
+    const newDates = getOccurrences({ ...item, startDate: newStartDate }, newFrom, addUTCMonths(newFrom, 12 * (oldDates.length + 1)))
+      .map(d => d.toISOString().slice(0, 10));
+    const map = {};
+    oldDates.forEach((d, i) => { if (newDates[i]) map[d] = newDates[i]; });
+    return map;
+  }
+
+  async function saveOccurrence({ amount, date, scope }) {
+    const m = overrideModal;
+    const item = items.find(i => i.id === m.itemId);
+    const parsed = parseFloat(amount);
+    if (scope === "one" || !m.recurring) {
+      if (parsed !== m.currentAmount) await setOverrideValue(m.key, parsed === item.amount ? null : parsed);
+      if (m.recurring && date !== m.date) await setMovedDate(m.key, date === m.origDate ? null : date);
+    } else if (date === m.date) {
+      // All future, amount only: update the item's base amount
+      await apiFetch(`/items/${item.id}`, { method: "PUT", body: JSON.stringify({ name: item.name, amount: parsed, type: item.type, frequency: item.frequency, startDate: item.startDate, endDate: item.endDate || "", categoryId: item.categoryId }) }, auth.token);
+      setItems(prev => prev.map(i => i.id === item.id ? { ...i, amount: parsed } : i));
+      await setOverrideValue(m.key, null);
+    } else {
+      // All future, with a new date: reschedule the series starting at this occurrence
+      if (item.endDate && date > item.endDate) throw new Error(`New date is after this item's end date (${item.endDate}).`);
+      const prev = getOccurrences(item, addDays(new Date(m.origDate + "T00:00:00Z"), -400), addDays(new Date(m.origDate + "T00:00:00Z"), -1));
+      const prevDate = prev.length ? prev[prev.length - 1].toISOString().slice(0, 10) : null;
+      if (prevDate && date <= prevDate) throw new Error(`New date must be after the previous occurrence (${prevDate}).`);
+      await setOverrideValue(m.key, null); // the new amount/date supersede this occurrence's one-off edits
+      await setMovedDate(m.key, null);
+      const dateMap = buildRescheduleDateMap(item, m.origDate, date);
+      await apiFetch(`/items/${item.id}/reschedule`, { method: "POST", body: JSON.stringify({ fromDate: m.origDate, newStartDate: date, amount: parsed, dateMap }) }, auth.token);
+      await refreshItemData();
     }
     setOverrideModal(null);
   }
 
-  async function deleteOverride(key) {
-    await apiFetch(`/overrides/${encodeURIComponent(key)}`, { method: "DELETE" }, auth.token);
-    setOverrides(prev => { const next = { ...prev }; delete next[key]; return next; });
+  async function resetOccurrence() {
+    await setOverrideValue(overrideModal.key, null);
+    await setMovedDate(overrideModal.key, null);
     setOverrideModal(null);
+  }
+
+  function openOccurrenceModal(item, { key, dateStr, origDateStr }) {
+    setOverrideModal({
+      key, itemId: item.id, itemName: item.name, recurring: item.frequency !== "One-time",
+      currentAmount: overrides[key] !== undefined ? overrides[key] : item.amount, defaultAmount: item.amount,
+      date: dateStr, origDate: origDateStr,
+    });
   }
 
   async function addItem() {
@@ -646,7 +777,11 @@ export default function App() {
   async function removeItem(id) {
     await apiFetch(`/items/${id}`, { method: "DELETE" }, auth.token);
     setItems(prev => prev.filter(i => i.id !== id));
-    setReconciled(prev => { const next = { ...prev }; Object.keys(next).forEach(k => { if (k.startsWith(`${id}_`)) delete next[k]; }); return next; });
+    const dropItemKeys = prev => { const next = { ...prev }; Object.keys(next).forEach(k => { if (k.startsWith(`${id}_`)) delete next[k]; }); return next; };
+    setReconciled(dropItemKeys);
+    setCancelled(dropItemKeys);
+    setOverrides(dropItemKeys);
+    setMoved(dropItemKeys);
   }
 
   async function saveItemEdit(id) {
@@ -731,9 +866,7 @@ export default function App() {
     }
     items.forEach(item => {
       // Future occurrences from today onward
-      getOccurrences(item, today, endDate).forEach(d => {
-        const key = d.toISOString().slice(0,10);
-        const recKey = `${item.id}_${key}`;
+      getEffectiveOccurrences(item, today, endDate, moved).forEach(({ dateStr: key, key: recKey }) => {
         if (key in events && !reconciled[recKey] && !cancelled[recKey]) {
           const overrideAmt = overrides[recKey] !== undefined ? overrides[recKey] : item.amount;
           const delta = item.type === "income" ? overrideAmt : -overrideAmt;
@@ -748,15 +881,13 @@ export default function App() {
       balance += delta;
       return { date, balance, delta, details: eventDetails[date] };
     });
-  }, [items, effectiveBalance, forecastDays, today, endDate, reconciled, cancelled, overrides]);
+  }, [items, effectiveBalance, forecastDays, today, endDate, reconciled, cancelled, overrides, moved]);
 
   const categoryBreakdown = useMemo(() => {
     const totals = {};
     items.forEach(item => {
       if (item.type !== "expense") return;
-      getOccurrences(item, today, endDate).forEach(d => {
-        const dateStr = d.toISOString().slice(0,10);
-        const key = `${item.id}_${dateStr}`;
+      getEffectiveOccurrences(item, today, endDate, moved).forEach(({ key }) => {
         if (reconciled[key] || cancelled[key]) return;
         const amt = overrides[key] !== undefined ? overrides[key] : item.amount;
         const catExists = categories.some(c => c.id === item.categoryId);
@@ -770,7 +901,7 @@ export default function App() {
         total,
       }))
       .sort((a, b) => b.total - a.total);
-  }, [items, today, endDate, reconciled, cancelled, overrides, categories]);
+  }, [items, today, endDate, reconciled, cancelled, overrides, moved, categories]);
 
   const minBalance = useMemo(() => chartData.length ? Math.min(...chartData.map(d => d.balance)) : 0, [chartData]);
   const endBalance = chartData[chartData.length - 1]?.balance ?? effectiveBalance;
@@ -781,30 +912,31 @@ export default function App() {
     const from = addDays(today, -7), to = addDays(today, 30);
     const rows = [];
     items.forEach(item => {
-      getOccurrences(item, from, to).forEach(d => {
-        const dateStr = d.toISOString().slice(0,10);
-        const key = `${item.id}_${dateStr}`;
-        rows.push({ item, dateStr, key, isReconciled: !!reconciled[key] });
+      getEffectiveOccurrences(item, from, to, moved).forEach(({ dateStr, origDateStr, key, isMoved }) => {
+        rows.push({ item, dateStr, origDateStr, key, isMoved, isReconciled: !!reconciled[key] });
       });
     });
     return rows.sort((a, b) => a.dateStr.localeCompare(b.dateStr));
-  }, [items, today, reconciled]);
+  }, [items, today, reconciled, moved]);
 
   // Compute next occurrence date for sorting
-  function getNextDate(item) {
-    if (item.frequency === "One-time") return item.startDate;
-    const far = addDays(today, 400);
-    const occ = getOccurrences(item, today, far);
-    if (occ.length > 0) return occ[0].toISOString().slice(0,10);
+  function getNextOccurrence(item) {
+    const fallback = { dateStr: item.startDate, origDateStr: item.startDate, key: `${item.id}_${item.startDate}`, isMoved: false };
+    if (item.frequency === "One-time") return fallback;
+    const occ = getEffectiveOccurrences(item, today, addDays(today, 400), moved);
     // If no future occurrence, use start date
-    return item.startDate;
+    return occ.length > 0 ? occ[0] : fallback;
   }
+  const getNextDate = item => getNextOccurrence(item).dateStr;
+  // A recurring series with an end date and no occurrences left from today on
+  const isEndedSeries = item => item.frequency !== "One-time" && !!item.endDate &&
+    (item.endDate < today.toISOString().slice(0,10) || getOccurrences(item, today, new Date(item.endDate + "T00:00:00Z")).length === 0);
 
   const recurringItems = useMemo(() => {
     return items
-      .filter(i => i.frequency !== "One-time")
+      .filter(i => i.frequency !== "One-time" && !isEndedSeries(i))
       .sort((a, b) => getNextDate(a).localeCompare(getNextDate(b)));
-  }, [items, today]);
+  }, [items, today, moved]);
 
   const oneTimeItems = useMemo(() => {
     return items
@@ -814,8 +946,8 @@ export default function App() {
 
   const archivedItems = useMemo(() => {
     return items
-      .filter(i => i.frequency === "One-time" && i.startDate < today.toISOString().slice(0,10))
-      .sort((a, b) => b.startDate.localeCompare(a.startDate)); // most recent first
+      .filter(i => i.frequency === "One-time" ? i.startDate < today.toISOString().slice(0,10) : isEndedSeries(i))
+      .sort((a, b) => (b.endDate || b.startDate).localeCompare(a.endDate || a.startDate)); // most recent first
   }, [items, today]);
 
   const expenseCategories = useMemo(() => categories.filter(c => c.type === "expense"), [categories]);
@@ -974,8 +1106,8 @@ export default function App() {
         {overrideModal && (
           <OverrideModal
             modal={overrideModal}
-            onSave={saveOverride}
-            onDelete={deleteOverride}
+            onSave={saveOccurrence}
+            onReset={resetOccurrence}
             onClose={() => setOverrideModal(null)}
             T={T}
           />
@@ -999,8 +1131,9 @@ export default function App() {
               <div style={{ fontSize: 13, fontWeight: 700, color: T.textMuted, fontFamily: "'DM Mono', monospace", letterSpacing: "0.08em", textTransform: "uppercase", marginBottom: 10 }}>🔄 Recurring ({recurringItems.length})</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {recurringItems.map(item => {
-                  const nextDate = getNextDate(item);
-                  const nextKey = `${item.id}_${nextDate}`;
+                  const nextOcc = getNextOccurrence(item);
+                  const nextDate = nextOcc.dateStr;
+                  const nextKey = nextOcc.key;
                   const nextOverride = overrides[nextKey];
                   const itemOverrides = Object.keys(overrides).filter(k => k.startsWith(`${item.id}_`));
                   const isEditing = editingItemId === item.id;
@@ -1029,7 +1162,7 @@ export default function App() {
                             <div>
                               <div style={{ fontWeight: 600, fontSize: 15 }}>{item.name}</div>
                               <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginTop: 2 }}>
-                                {item.frequency} · next: {nextDate}{item.endDate ? ` · ends ${item.endDate}` : ""} · {categoryName(item.categoryId)}
+                                {item.frequency} · next: {nextDate}{nextOcc.isMoved ? ` (moved from ${nextOcc.origDateStr})` : ""}{item.endDate ? ` · ends ${item.endDate}` : ""} · {categoryName(item.categoryId)}
                               </div>
                             </div>
                           </div>
@@ -1044,11 +1177,8 @@ export default function App() {
                               {nextOverride !== undefined && <span style={{ fontSize: 11, color: T.textMuted, marginLeft: 4, textDecoration: "line-through", fontWeight: 400 }}>{formatCurrency(item.amount)}</span>}
                             </span>
                             <button
-                              onClick={() => {
-                                const recKey = `${item.id}_${nextDate}`;
-                                setOverrideModal({ key: recKey, itemName: item.name, currentAmount: overrides[recKey] !== undefined ? overrides[recKey] : item.amount, defaultAmount: item.amount, date: nextDate, itemId: item.id });
-                              }}
-                              title="Override next occurrence amount"
+                              onClick={() => openOccurrenceModal(item, nextOcc)}
+                              title="Edit next occurrence amount or date"
                               style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.accent, borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 12, fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}>
                               ✏️ Next
                             </button>
@@ -1111,7 +1241,7 @@ export default function App() {
                 )}
               </div>
 
-              {/* Archived one-time items */}
+              {/* Archived: past one-time items and ended recurring series */}
               {archivedItems.length > 0 && (
                 <div style={{ marginTop: 12 }}>
                   <button onClick={() => setShowArchived(a => !a)} style={{ background: "none", border: "none", color: T.textMuted, cursor: "pointer", fontFamily: "'DM Mono', monospace", fontSize: 12, padding: "6px 0", display: "flex", alignItems: "center", gap: 6 }}>
@@ -1126,7 +1256,7 @@ export default function App() {
                             <div style={{ width: 6, height: 6, borderRadius: "50%", background: item.type === "income" ? T.income : T.expense, flexShrink: 0 }} />
                             <div>
                               <div style={{ fontWeight: 600, fontSize: 14, textDecoration: "line-through" }}>{item.name}</div>
-                              <div style={{ color: T.textMuted, fontSize: 11, fontFamily: "'DM Mono', monospace", marginTop: 1 }}>{item.startDate} · completed</div>
+                              <div style={{ color: T.textMuted, fontSize: 11, fontFamily: "'DM Mono', monospace", marginTop: 1 }}>{item.frequency === "One-time" ? `${item.startDate} · completed` : `${item.frequency} · ${item.startDate} → ${item.endDate} · ended`}</div>
                             </div>
                           </div>
                           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -1171,7 +1301,7 @@ export default function App() {
             <p style={{ color: T.textMuted, fontSize: 14, marginTop: 0, marginBottom: 16 }}>Click an item to mark it as completed. Shows the past 7 days and next 30 days.</p>
             {reconcileWindow.length === 0 && <div style={{ ...cardStyle, color: T.textMuted, textAlign: "center", padding: 40 }}>No items in this window.</div>}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {reconcileWindow.map(({ item, dateStr, key, isReconciled }) => {
+              {reconcileWindow.map(({ item, dateStr, origDateStr, key, isMoved, isReconciled }) => {
                 const isPast = dateStr < today.toISOString().slice(0,10);
                 const effectiveAmount = overrides[key] !== undefined ? overrides[key] : item.amount;
                 const isOverridden = overrides[key] !== undefined;
@@ -1181,7 +1311,7 @@ export default function App() {
                       <div style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${isReconciled ? T.accent : T.textMuted}`, background: isReconciled ? T.accent : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: darkMode ? "#0a0f1a" : "#fff", flexShrink: 0 }}>{isReconciled ? "✓" : ""}</div>
                       <div>
                         <div style={{ fontWeight: 600, fontSize: 14, textDecoration: isReconciled ? "line-through" : "none" }}>{item.name}</div>
-                        <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace" }}>{dateStr} · <span style={{ color: isPast ? T.expense : T.income }}>{isPast ? "past" : "upcoming"}</span></div>
+                        <div style={{ color: T.textMuted, fontSize: 12, fontFamily: "'DM Mono', monospace" }}>{dateStr}{isMoved && ` (moved from ${origDateStr})`} · <span style={{ color: isPast ? T.expense : T.income }}>{isPast ? "past" : "upcoming"}</span></div>
                       </div>
                     </div>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1192,7 +1322,7 @@ export default function App() {
                       </span>
                       {!isReconciled && (
                         <button
-                          onClick={e => { e.stopPropagation(); setOverrideModal({ key, itemName: item.name, currentAmount: effectiveAmount, defaultAmount: item.amount, date: dateStr, itemId: item.id }); }}
+                          onClick={e => { e.stopPropagation(); openOccurrenceModal(item, { key, dateStr, origDateStr }); }}
                           style={{ background: T.surface2, border: `1px solid ${T.border}`, color: T.accent, borderRadius: 6, padding: "3px 8px", cursor: "pointer", fontSize: 11, fontFamily: "'DM Sans', sans-serif", fontWeight: 600 }}>
                           ✏️
                         </button>
@@ -1216,7 +1346,7 @@ export default function App() {
 
         {activeTab === "calendar" && (
           <div style={cardStyle}>
-            <CalendarView items={items} reconciled={reconciled} cancelled={cancelled} overrides={overrides} onToggleReconcile={toggleReconcile} onToggleCancelled={toggleCancelled} T={T} />
+            <CalendarView items={items} reconciled={reconciled} cancelled={cancelled} overrides={overrides} moved={moved} onToggleReconcile={toggleReconcile} onToggleCancelled={toggleCancelled} onEditOccurrence={({ item, ...occ }) => openOccurrenceModal(item, occ)} T={T} />
           </div>
         )}
       </div>
